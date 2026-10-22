@@ -7,7 +7,7 @@ clipped at white (sun, sky, fire, lamps, highlights) comes out brighter than whi
 HUD sits at a paper white you choose.
 
 This is a personal project, developed on one machine: RTX 5070 Ti, 4K HDR OLED, the Viva New Vegas modlist, xNVSE
-6.4.8, DXVK 3.0.1. **Status: it passes its test harness, but has not been played in game yet.**
+6.4.8, DXVK 3.0.1. **Status: in development. It passes its test harness; in-game testing has just started.**
 
 ## How it works
 
@@ -21,6 +21,8 @@ it, and writes the result to an 8-bit target that clips everything above 1. The 
 3. Creates the full-screen 8-bit render targets after the blend as 16-bit float, so highlights survive to the end of
    the frame.
 4. Decodes the finished frame, HUD included, from the game's gamma space to scRGB just before it is presented.
+5. Shows the game the 8-bit formats it asked for wherever it can read a format, and converts locks and copies to
+   system memory to match, because the engine cannot handle a 16-bit float back buffer.
 
 [docs/plan.md](docs/plan.md) has the details: the game's tonemapper, the pipeline, and how it is tested.
 

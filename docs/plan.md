@@ -35,6 +35,11 @@ extension interfaces.
   directly, so every route ends there. The plugin puts a jump over the start of that function (`src/detour.cpp`).
   It moves only plain prologue instructions (DXVK 3.0.1's is `push ebp; mov ebp, esp; sub esp, 0x30`). If the
   function starts otherwise, the plugin falls back to the vtable slot and says so in the log.
+- **The game must never see a 16-bit float format where it asked for an 8-bit one.** The first start in game
+  (2026-10-22) crashed in Gamebryo's renderer setup, right after the device was created, while it built the render
+  target group for the back buffer. Its pixel format lookup had no entry for `A16B16G16R16F`, and an `NiPixelData`
+  copied its format from the null pointer it got (`rep movsd` from `esi = 0`, 0x11 dwords = one `NiPixelFormat`). So
+  the plugin reports the game's own formats everywhere (`src/masquerade.cpp`, below).
 
 ## The game's tonemapper
 
@@ -78,7 +83,8 @@ white at 2.5), and `pow 1/2.2` back. The plugin recognises VPT's shaders by its 
    goes on when it is enabled in the ini, d3d9 is DXVK, and Windows HDR is on (or `ForceHdr`). Then:
    - `UnlockAdditionalFormats` on the game's own `IDirect3D9`: the unlock is per interface and copied into the device
      it creates.
-   - The back buffer becomes `A16B16G16R16F`. The game still sees the format it asked for in its present parameters.
+   - The back buffer becomes `A16B16G16R16F`. The game still sees the format it asked for: its present parameters
+     get it back after the call, and everything else goes through step 6.
    - The swap chain switches to scRGB, with metadata: BT.709 primaries, D65, max luminance and MaxCLL = peak, MaxFALL
      = paper white.
    - The device's vtable gets hooked.
@@ -101,14 +107,28 @@ white at 2.5), and `pow 1/2.2` back. The plugin recognises VPT's shaders by its 
    after it, in case the engine skips setting constants it thinks are already there.
 5. **Render targets.** Full-screen `A8R8G8B8` render targets (exactly the back buffer's size, not shared, not lockable)
    are created as `A16B16G16R16F`, so values above 1 survive the passes between the blend and the back buffer.
-6. **Present.** The plugin copies the back buffer (resolving it if it is multisampled), then draws the copy back
+6. **What the game sees** (`src/masquerade.cpp`). Every surface and texture whose format the plugin changed carries
+   the format the game asked for as private data: the back buffers (again after each `Reset`), the upgraded textures
+   and each of their levels, and the upgraded render target surfaces. Hooks on the vtables that all surfaces, all
+   textures and all swap chains share report that format:
+   - `IDirect3DSurface9::GetDesc`, `IDirect3DTexture9::GetLevelDesc` and `IDirect3DSwapChain9::GetPresentParameters`;
+   - `IDirect3DSurface9::LockRect` on such a surface converts it into an 8-bit render target of the game's format,
+     reads that back to system memory and hands the game the copy. `UnlockRect` writes back only the locked rectangle
+     (unless the lock was read-only), so highlights elsewhere stay;
+   - DXVK copies to and from system memory (`GetRenderTargetData`, `UpdateSurface`) only between equal formats. When
+     it refuses one because of a changed format, the device hook makes the copy through an 8-bit render target.
+
+   The plugin's own calls (`InternalScope`) and its log and traces see the real formats. The log names the caller
+   (module + offset) of the first few calls that saw a changed format.
+7. **Present.** The plugin copies the back buffer (resolving it if it is multisampled), then draws the copy back
    through `src/shaders/encode.hlsl`: `scRGB = pow(value, Gamma) x PaperWhiteNits / 80`, capped at `peak / 80`. White
    UI lands at paper white. After the present it draws the copy back unchanged, so the game never finds an scRGB
    frame in its back buffer: one drawn over without a clear would otherwise be decoded twice. The pass saves and
    restores all device state it touches with a state block.
-7. **Gamma ramps** are ignored while HDR is on. DXVK applies them in fullscreen through a lookup table that clips at 1.
+8. **Gamma ramps** are ignored while HDR is on. DXVK applies them in fullscreen through a lookup table that clips at 1.
 
-`Reset` repeats the back buffer and colour space steps. The frame copy and the state block are released before it.
+`Reset` repeats the back buffer, tagging and colour space steps. The frame copy, the state block and the conversion
+surfaces are released before it.
 
 ## Settings
 
@@ -131,8 +151,9 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
 ## Verification
 
 - `test.ps1` builds and runs `tests/harness.cpp` on a copy of the game's DXVK, in an off-screen window, without the
-  game. It renders a synthetic HDR scene through the original shaders (vanilla and VPT, all three variants) and
-  through the plugin's. The checks:
+  game. It creates its device as the game does (two lockable `X8R8G8B8` back buffers, a multithreaded pure device),
+  and renders a synthetic HDR scene through the original shaders (vanilla and VPT, all three variants) and through
+  the plugin's. The checks:
   - With `SdrExact=1` the plugin's shaders match exactly.
   - With HDR on they match wherever the original stayed below white, go above white where it clipped, and stay at or
     below the peak.
@@ -140,6 +161,10 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
   - Device creation is still caught when a stand-in for Windows' shim hooks `CreateDevice` over the plugin.
   - The presented scRGB frame is the decoded gamma frame, scaled to paper white and capped at the peak.
   - After the present the back buffer holds the game's frame again.
+  - Both back buffers and the swap chain report `X8R8G8B8`, and the upgraded render targets (textures and surfaces)
+    `A8R8G8B8`, while really being 16-bit float. A render target the game makes 16-bit float itself still reports so.
+  - A read-only lock of the back buffer gets the frame as `X8R8G8B8`. A lock that writes changes only its rectangle.
+    `GetRenderTargetData` of the back buffer into an `X8R8G8B8` surface works.
 
   It runs at gamma 2.4, so the shaders and the decode must both follow the ini.
 - `tests/dxvk_hdr_probe.cpp`: does a given `d3d9.dll` give an HDR swap chain on this machine.
@@ -156,8 +181,10 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
 - How bright the game's highlights really are in daylight, interiors and at night: capture traces and tune
   `PaperWhiteNits`, `ShoulderStart` and the peak. On OLEDs, large bright areas such as the desert sky trigger the
   panel's brightness limiter, so the defaults should keep big areas modest.
-- Whether anything reads the upgraded targets or the back buffer back to the CPU in a fixed 8-bit format (save game
-  thumbnails, screenshots): watch the `copy` lines in the log, and check that saves still get thumbnails.
+- What reads the upgraded targets or the back buffer back to the CPU (save game thumbnails, screenshots): the `copy`
+  lines and the lines naming a caller in the log show it. Check that saves still get thumbnails.
+- The back buffer now has an alpha channel that holds what the game's draws wrote, where `X8R8G8B8` read as 1. A draw
+  that blends with the destination's alpha would see the difference. Watch the HUD and menus for it.
 - UI brightness separate from paper white: the HUD is drawn into the same back buffer, so this needs the HUD pass
   told apart from the scene.
 - Cost: one extra full-screen copy and two full-screen passes per frame at 16-bit float.

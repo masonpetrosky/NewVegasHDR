@@ -7,6 +7,7 @@
 // has the design.
 #include <windows.h>
 #include <d3d9.h>
+#include <intrin.h>
 
 #include <cstdio>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include "display.h"
 #include "dxvk_ext.h"
 #include "log.h"
+#include "masquerade.h"
 #include "nvse.h"
 #include "shader_info.h"
 #include "state.h"
@@ -121,6 +123,7 @@ void releaseResetResources() {
     g.stateBlock->Release();
     g.stateBlock = nullptr;
   }
+  masquerade::releaseResources();
 }
 
 bool ensureEncodeResources(IDirect3DDevice9* device) {
@@ -268,7 +271,7 @@ std::string shape(IDirect3DSurface9* s) {
   if (s == g.backBuffer)
     return "back buffer";
   D3DSURFACE_DESC d;
-  if (FAILED(s->GetDesc(&d)))
+  if (FAILED(masquerade::realDesc(s, &d)))
     return "?";
   char buf[96];
   std::snprintf(buf, sizeof buf, "%ux%u %s%s pool %d", d.Width, d.Height, formatName(d.Format),
@@ -410,6 +413,32 @@ HRESULT STDMETHODCALLTYPE hookSwapChainPresent(IDirect3DSwapChain9* self, const 
   return present(device, [&] { return g.d3d.swapChainPresent(self, source, dest, window, dirty, flags); });
 }
 
+// The back buffer format the game sees: what it asked for. Windowed games may ask for UNKNOWN, the desktop's format,
+// which D3D9 turns into X8R8G8B8.
+D3DFORMAT shownBackBufferFormat(D3DFORMAT asked) {
+  return asked == D3DFMT_UNKNOWN ? D3DFMT_X8R8G8B8 : asked;
+}
+
+// Takes the size and identity of the back buffer and of the swap chain, after the device was made or reset. Returns
+// the back buffer's real description.
+D3DSURFACE_DESC noteBackBuffer(IDirect3DDevice9* device) {
+  D3DSURFACE_DESC desc = {};
+  IDirect3DSurface9* backBuffer = nullptr;
+  if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer))) {
+    masquerade::realDesc(backBuffer, &desc);
+    g.width = desc.Width;
+    g.height = desc.Height;
+    g.backBuffer = backBuffer;
+    backBuffer->Release();
+  }
+  IDirect3DSwapChain9* swapChain = nullptr;
+  if (SUCCEEDED(device->GetSwapChain(0, &swapChain))) {
+    g.swapChain = swapChain;
+    swapChain->Release();
+  }
+  return desc;
+}
+
 HRESULT STDMETHODCALLTYPE hookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* pp) {
   if (self != g.device || !pp)
     return g.d3d.reset(self, pp);
@@ -430,17 +459,12 @@ HRESULT STDMETHODCALLTYPE hookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETER
     LOG("Reset failed (0x%08lx)", hr);
     return hr;
   }
-  IDirect3DSurface9* backBuffer = nullptr;
-  if (SUCCEEDED(self->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer))) {
-    D3DSURFACE_DESC desc;
-    backBuffer->GetDesc(&desc);
-    g.width = desc.Width;
-    g.height = desc.Height;
-    g.backBuffer = backBuffer;
-    backBuffer->Release();
-  }
-  if (g.fp16BackBuffer)
+  g.gameFormat = shownBackBufferFormat(asked);
+  noteBackBuffer(self);
+  if (g.fp16BackBuffer) {
+    masquerade::tagBackBuffers(self, g.gameFormat);  // Reset made new ones
     g.scrgb = enableScrgb(self);
+  }
   return hr;
 }
 
@@ -459,7 +483,7 @@ void STDMETHODCALLTYPE hookSetGammaRamp(IDirect3DDevice9* self, UINT swapChain, 
 // Full-screen 8-bit render targets come after the tonemapper, so they get 16-bit float: highlights then survive the
 // later image space passes on their way to the back buffer.
 bool upgradeable(IDirect3DDevice9* device, UINT width, UINT height, DWORD usage, D3DFORMAT format) {
-  return device == g.device && g.fp16BackBuffer && g.config.upgradeRenderTargets &&
+  return device == g.device && !g.internal && g.fp16BackBuffer && g.config.upgradeRenderTargets &&
          (usage & D3DUSAGE_RENDERTARGET) && format == D3DFMT_A8R8G8B8 && width == g.width && height == g.height;
 }
 
@@ -472,8 +496,10 @@ HRESULT STDMETHODCALLTYPE hookCreateTexture(IDirect3DDevice9* self, UINT width, 
   bool upgraded = upgrade && SUCCEEDED(hr);
   if (upgrade && FAILED(hr))
     hr = g.d3d.createTexture(self, width, height, levels, usage, format, pool, texture, shared);
-  if (upgraded)
+  if (upgraded) {
     ++g.upgradedTargets;
+    masquerade::tagTexture(*texture, format);
+  }
   if (self == g.device && (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)))
     LOG("CreateTexture %ux%u %s levels %u usage 0x%lx pool %d%s -> %p (0x%08lx)", width, height, formatName(format),
         levels, usage, static_cast<int>(pool), upgraded ? ", made A16B16G16R16F" : "",
@@ -491,8 +517,10 @@ HRESULT STDMETHODCALLTYPE hookCreateRenderTarget(IDirect3DDevice9* self, UINT wi
   bool upgraded = upgrade && SUCCEEDED(hr);
   if (upgrade && FAILED(hr))
     hr = g.d3d.createRenderTarget(self, width, height, format, samples, quality, lockable, surface, shared);
-  if (upgraded)
+  if (upgraded) {
     ++g.upgradedTargets;
+    masquerade::tag(*surface, format);
+  }
   if (self == g.device && !g.internal)
     LOG("CreateRenderTarget %ux%u %s msaa %d lockable %d%s -> %p (0x%08lx)", width, height, formatName(format),
         static_cast<int>(samples), lockable, upgraded ? ", made A16B16G16R16F" : "",
@@ -507,7 +535,10 @@ HRESULT STDMETHODCALLTYPE hookUpdateSurface(IDirect3DDevice9* self, IDirect3DSur
     if (trace::active())
       trace::line("  UpdateSurface %s -> %s", trace::describe(source).c_str(), trace::describe(dest).c_str());
   }
-  return g.d3d.updateSurface(self, source, rect, dest, point);
+  HRESULT hr = g.d3d.updateSurface(self, source, rect, dest, point);
+  if (hr == D3DERR_INVALIDCALL && self == g.device && !g.internal)
+    masquerade::updateSurface(self, source, rect, dest, point, hr, _ReturnAddress());
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hookGetRenderTargetData(IDirect3DDevice9* self, IDirect3DSurface9* source,
@@ -517,7 +548,10 @@ HRESULT STDMETHODCALLTYPE hookGetRenderTargetData(IDirect3DDevice9* self, IDirec
     if (trace::active())
       trace::line("  GetRenderTargetData %s -> %s", trace::describe(source).c_str(), trace::describe(dest).c_str());
   }
-  return g.d3d.getRenderTargetData(self, source, dest);
+  HRESULT hr = g.d3d.getRenderTargetData(self, source, dest);
+  if (hr == D3DERR_INVALIDCALL && self == g.device && !g.internal)
+    masquerade::getRenderTargetData(self, source, dest, hr, _ReturnAddress());
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE hookStretchRect(IDirect3DDevice9* self, IDirect3DSurface9* source, const RECT* sourceRect,
@@ -681,11 +715,7 @@ HRESULT STDMETHODCALLTYPE hookSetPixelShaderConstantF(IDirect3DDevice9* self, UI
   return g.d3d.setPixelShaderConstantF(self, start, data, count);
 }
 
-template <typename Fn>
-void hook(void* object, int index, Fn hookFn, Fn& original) {
-  if (void* previous = vt::patch(object, index, reinterpret_cast<void*>(hookFn)))
-    original = reinterpret_cast<Fn>(previous);
-}
+using vt::hook;
 
 void hookDevice(IDirect3DDevice9* device) {
   hook(device, vt::kReset, &hookReset, g.d3d.reset);
@@ -768,22 +798,17 @@ HRESULT createDevice(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND focus
   }
 
   g.device = *device;
-  g.gameFormat = asked;
+  g.gameFormat = shownBackBufferFormat(asked);
   g.fp16BackBuffer = fp16;
-  IDirect3DSurface9* backBuffer = nullptr;
-  if (SUCCEEDED(g.device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer))) {
-    D3DSURFACE_DESC desc;
-    backBuffer->GetDesc(&desc);
-    g.width = desc.Width;
-    g.height = desc.Height;
-    g.backBuffer = backBuffer;
-    LOG("back buffer: %ux%u %s%s", desc.Width, desc.Height, formatName(desc.Format),
-        desc.MultiSampleType ? " (multisampled)" : "");
-    backBuffer->Release();
-  }
+  const D3DSURFACE_DESC desc = noteBackBuffer(g.device);
+  LOG("back buffer: %ux%u %s%s", desc.Width, desc.Height, formatName(desc.Format),
+      desc.MultiSampleType ? " (multisampled)" : "");
   hookDevice(g.device);
-  if (fp16)
+  if (fp16) {
+    masquerade::install(g.device);
+    masquerade::tagBackBuffers(g.device, g.gameFormat);
     g.scrgb = enableScrgb(g.device);
+  }
   return hr;
 }
 

@@ -53,6 +53,7 @@ add_library(NewVegasHDR SHARED
   src/detour.cpp
   src/display.cpp
   src/log.cpp
+  src/masquerade.cpp
   src/shader_info.cpp
   src/trace.cpp
   src/vtable.cpp

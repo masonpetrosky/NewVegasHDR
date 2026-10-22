@@ -48,6 +48,11 @@ using SetPixelShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, IDirect3
 using SetPixelShaderConstantFFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
 using SwapChainPresentFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSwapChain9*, const RECT*, const RECT*, HWND,
                                                        const RGNDATA*, DWORD);
+using SwapChainGetPresentParametersFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSwapChain9*, D3DPRESENT_PARAMETERS*);
+using SurfaceGetDescFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSurface9*, D3DSURFACE_DESC*);
+using SurfaceLockRectFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSurface9*, D3DLOCKED_RECT*, const RECT*, DWORD);
+using SurfaceUnlockRectFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSurface9*);
+using TextureGetLevelDescFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DTexture9*, UINT, D3DSURFACE_DESC*);
 
 struct Originals {
   CreateDeviceFn createDevice = nullptr;
@@ -76,6 +81,11 @@ struct Originals {
   SetPixelShaderFn setPixelShader = nullptr;
   SetPixelShaderConstantFFn setPixelShaderConstantF = nullptr;
   SwapChainPresentFn swapChainPresent = nullptr;
+  SwapChainGetPresentParametersFn swapChainGetPresentParameters = nullptr;
+  SurfaceGetDescFn surfaceGetDesc = nullptr;
+  SurfaceLockRectFn surfaceLockRect = nullptr;
+  SurfaceUnlockRectFn surfaceUnlockRect = nullptr;
+  TextureGetLevelDescFn textureGetLevelDesc = nullptr;
 };
 
 // One of the game's HDR blend shaders as the game sees it: ours if it was replaced.
@@ -96,7 +106,7 @@ struct State {
 
   IDirect3DDevice9* device = nullptr;
   UINT width = 0, height = 0;  // back buffer
-  D3DFORMAT gameFormat = D3DFMT_UNKNOWN;  // the back buffer format the game asked for
+  D3DFORMAT gameFormat = D3DFMT_UNKNOWN;  // the back buffer format the game asked for, and sees (UNKNOWN as X8R8G8B8)
   bool fp16BackBuffer = false;
   bool scrgb = false;  // the swap chain takes scRGB: decode the frame before presenting it
   DisplayInfo display;
@@ -116,6 +126,7 @@ struct State {
   std::unordered_map<const void*, ShaderInfo> shaders;  // every shader the game created, for traces
   std::atomic<int> upgradedTargets = 0;
   IDirect3DSurface9* backBuffer = nullptr;  // identity only, not referenced
+  IDirect3DSwapChain9* swapChain = nullptr;  // the implicit one; identity only
 
   // Tracked device state (render thread only).
   IDirect3DSurface9* renderTarget0 = nullptr;

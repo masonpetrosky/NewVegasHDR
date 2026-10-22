@@ -4,6 +4,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 namespace logging {
@@ -33,6 +34,24 @@ void write(const char* format, ...) {
   va_end(args);
   std::fputc('\n', g_file);
   std::fflush(g_file);
+}
+
+std::string where(const void* address) {
+  char buf[MAX_PATH + 48];
+  HMODULE module = nullptr;
+  char path[MAX_PATH];
+  if (address &&
+      GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         static_cast<LPCSTR>(address), &module) &&
+      GetModuleFileNameA(module, path, MAX_PATH)) {
+    const char* name = std::strrchr(path, '\\');
+    std::snprintf(buf, sizeof buf, "%s+0x%x (%p)", name ? name + 1 : path,
+                  static_cast<unsigned>(static_cast<const char*>(address) - reinterpret_cast<const char*>(module)),
+                  address);
+  } else {
+    std::snprintf(buf, sizeof buf, "%p", address);
+  }
+  return buf;
 }
 
 }  // namespace logging

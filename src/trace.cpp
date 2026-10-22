@@ -299,6 +299,7 @@ std::string describeStage(IDirect3DDevice9* device, DWORD stage) {
 std::string describe(IDirect3DSurface9* surface) {
   if (!surface)
     return "none";
+  InternalScope internal;  // the real format, not the one the game sees
   D3DSURFACE_DESC desc;
   if (FAILED(surface->GetDesc(&desc)))
     return "?";
@@ -321,6 +322,7 @@ std::string describe(IDirect3DSurface9* surface) {
 std::string describe(IDirect3DBaseTexture9* texture) {
   if (!texture)
     return "none";
+  InternalScope internal;
   char buf[160];
   D3DSURFACE_DESC desc = {};
   const D3DRESOURCETYPE type = texture->GetType();

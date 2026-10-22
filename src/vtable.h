@@ -37,9 +37,25 @@ constexpr int kSetPixelShaderConstantF = 109;
 
 // IDirect3DSwapChain9
 constexpr int kSwapChainPresent = 3;
+constexpr int kSwapChainGetPresentParameters = 9;
+
+// IDirect3DSurface9
+constexpr int kSurfaceGetDesc = 12;
+constexpr int kSurfaceLockRect = 13;
+constexpr int kSurfaceUnlockRect = 14;
+
+// IDirect3DTexture9
+constexpr int kTextureGetLevelDesc = 17;
 
 // Replaces slot `index` of the COM object's vtable with `hook` and returns what was there. Every object of the class
 // shares the vtable, so the hook covers all of them. Returns nullptr if the slot already holds `hook`.
 void* patch(void* object, int index, void* hook);
+
+// patch() for a typed hook: keeps the function that was in the slot in `original`.
+template <typename Fn>
+void hook(void* object, int index, Fn hookFn, Fn& original) {
+  if (void* previous = patch(object, index, reinterpret_cast<void*>(hookFn)))
+    original = reinterpret_cast<Fn>(previous);
+}
 
 }  // namespace vt

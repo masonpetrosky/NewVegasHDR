@@ -23,7 +23,11 @@ def main():
         "IDirect3D9Ex": methods(header, "IDirect3D9Ex"),
         "IDirect3DDevice9": methods(header, "IDirect3DDevice9"),
         "IDirect3DSwapChain9": methods(header, "IDirect3DSwapChain9"),
+        "IDirect3DSurface9": methods(header, "IDirect3DSurface9"),
+        "IDirect3DTexture9": methods(header, "IDirect3DTexture9"),
     }
+    # Slots of the smaller interfaces carry the interface's name: kSwapChainPresent is IDirect3DSwapChain9::Present.
+    prefixes = {"IDirect3DSwapChain9": "SwapChain", "IDirect3DSurface9": "Surface", "IDirect3DTexture9": "Texture"}
     section, bad, checked = None, 0, 0
     for line in ours.splitlines():
         h = re.match(r"// (IDirect3D\w+)$", line.strip())
@@ -33,8 +37,9 @@ def main():
         d = re.match(r"constexpr int k(\w+) = (\d+);", line.strip())
         if d and section:
             name, index = d.group(1), int(d.group(2))
-            if section == "IDirect3DSwapChain9" and name.startswith("SwapChain"):
-                name = name[len("SwapChain"):]
+            prefix = prefixes.get(section)
+            if prefix and name.startswith(prefix):
+                name = name[len(prefix):]
             actual = tables[section][index] if index < len(tables[section]) else None
             checked += 1
             if actual != name:

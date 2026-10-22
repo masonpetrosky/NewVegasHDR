@@ -10,6 +10,8 @@
 // 3. Triggers a frame trace and checks the plugin's decode: the scRGB frame it presents must be the gamma-space frame
 //    in linear light, scaled to paper white and capped at the peak. After the present the back buffer must hold the
 //    gamma-space frame again.
+// 4. Checks what the game sees: the back buffer and the upgraded render targets must report the 8-bit formats the game
+//    asked for, while really being 16-bit float, and locks and copies to system memory must work in those formats.
 //
 // usage: harness <DXVK d3d9.dll> <NewVegasHDR.dll> <folder with sdp017\ and vpt\ shaders> <work folder>
 #include <windows.h>
@@ -246,20 +248,23 @@ HWND makeWindow() {
   return hwnd;
 }
 
-// The game's way: windowed, X8R8G8B8, no automatic depth buffer.
+// The game's way, as the plugin logged it in game: windowed, two X8R8G8B8 back buffers, lockable, no automatic depth
+// buffer, a multithreaded pure device. Only the present interval differs, so that the test runs fast.
 IDirect3DDevice9* createDevice(IDirect3D9* d3d, HWND hwnd) {
   D3DPRESENT_PARAMETERS pp = {};
   pp.BackBufferWidth = kBackWidth;
   pp.BackBufferHeight = kBackHeight;
   pp.BackBufferFormat = D3DFMT_X8R8G8B8;
-  pp.BackBufferCount = 1;
+  pp.BackBufferCount = 2;
   pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
   pp.hDeviceWindow = hwnd;
   pp.Windowed = TRUE;
+  pp.Flags = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
   pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
   IDirect3DDevice9* device = nullptr;
-  HRESULT hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp,
-                                 &device);
+  HRESULT hr = d3d->CreateDevice(
+      D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+      D3DCREATE_MULTITHREADED | D3DCREATE_PUREDEVICE | D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp, &device);
   if (FAILED(hr))
     std::printf("CreateDevice failed: 0x%08lx\n", hr);
   return device;
@@ -348,6 +353,49 @@ Dds readDds(const fs::path& path) {
   return d;
 }
 
+// Reads a render target back as 16-bit float RGBA, or returns nothing if it cannot. DXVK copies to system memory only
+// between equal formats, so a result also proves that the surface really is 16-bit float, whatever it reports.
+std::vector<float> readFp16(IDirect3DDevice9* device, IDirect3DSurface9* surface) {
+  std::vector<float> rgba;
+  IDirect3DSurface9* sysmem = nullptr;
+  if (SUCCEEDED(device->CreateOffscreenPlainSurface(kBackWidth, kBackHeight, D3DFMT_A16B16G16R16F, D3DPOOL_SYSTEMMEM,
+                                                    &sysmem, nullptr)) &&
+      SUCCEEDED(device->GetRenderTargetData(surface, sysmem))) {
+    D3DLOCKED_RECT locked;
+    if (SUCCEEDED(sysmem->LockRect(&locked, nullptr, D3DLOCK_READONLY))) {
+      rgba.resize(size_t(kBackWidth) * kBackHeight * 4);
+      for (UINT y = 0; y < kBackHeight; ++y) {
+        const auto* row = reinterpret_cast<const uint16_t*>(static_cast<const char*>(locked.pBits) + y * locked.Pitch);
+        for (UINT i = 0; i < kBackWidth * 4; ++i)
+          rgba[size_t(y) * kBackWidth * 4 + i] = halfToFloat(row[i]);
+      }
+      sysmem->UnlockRect();
+    }
+  }
+  if (sysmem)
+    sysmem->Release();
+  return rgba;
+}
+
+// The test ramp that goes into the back buffer: red rises from 0 to 3 across, green is half of it, blue rises down.
+void rampColour(UINT x, UINT y, float (&rgb)[3]) {
+  rgb[0] = 3.0f * x / (kBackWidth - 1);
+  rgb[1] = 0.5f * rgb[0];
+  rgb[2] = static_cast<float>(y) / (kBackHeight - 1);
+}
+
+// How far an X8R8G8B8 pixel (B, G, R, X in memory) is from the ramp clipped to 8 bits, in steps of 1/255.
+int rampDifference8(const uint8_t* pixel, UINT x, UINT y) {
+  float rgb[3];
+  rampColour(x, y, rgb);
+  int worst = 0;
+  for (int c = 0; c < 3; ++c) {
+    const int expected = static_cast<int>(std::lround(std::clamp(rgb[c], 0.0f, 1.0f) * 255));
+    worst = std::max(worst, std::abs(pixel[2 - c] - expected));
+  }
+  return worst;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -425,9 +473,7 @@ int main(int argc, char** argv) {
     return 1;
   IDirect3DSurface9* backBuffer = nullptr;
   device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
-  D3DSURFACE_DESC bbDesc = {};
-  backBuffer->GetDesc(&bbDesc);
-  check(bbDesc.Format == D3DFMT_A16B16G16R16F,
+  check(!readFp16(device, backBuffer).empty(),
         "the back buffer became A16B16G16R16F, with CreateDevice hooked over the plugin as Windows' shims do");
 
   Renderer renderer(device);
@@ -489,8 +535,9 @@ int main(int argc, char** argv) {
     for (UINT y = 0; y < kBackHeight; ++y) {
       auto* row = reinterpret_cast<uint16_t*>(static_cast<char*>(locked.pBits) + y * locked.Pitch);
       for (UINT x = 0; x < kBackWidth; ++x) {
-        const float r = 3.0f * x / (kBackWidth - 1);
-        const float rgba[4] = {r, 0.5f * r, static_cast<float>(y) / (kBackHeight - 1), 1};
+        float rgb[3];
+        rampColour(x, y, rgb);
+        const float rgba[4] = {rgb[0], rgb[1], rgb[2], 1};
         for (int c = 0; c < 4; ++c)
           row[x * 4 + c] = floatToHalf(rgba[c]);
       }
@@ -561,6 +608,136 @@ int main(int argc, char** argv) {
     std::snprintf(what, sizeof what, "scRGB = linear gamma frame x paper white / 80: largest relative error %.4f, "
                   "brightest %.2f (peak %.2f)", worst, top, kPeakNits / 80);
     check(worst < 0.01f && top <= kPeakNits / 80 * 1.001f, what);
+  }
+
+  // 4. What the game sees. Gamebryo crashed at startup when the back buffer reported A16B16G16R16F.
+  std::printf("formats the game sees:\n");
+  {
+    bool shown = true;
+    for (UINT i = 0; i < 2; ++i) {
+      IDirect3DSurface9* surface = nullptr;
+      D3DSURFACE_DESC desc = {};
+      shown &= SUCCEEDED(device->GetBackBuffer(0, i, D3DBACKBUFFER_TYPE_MONO, &surface)) &&
+               SUCCEEDED(surface->GetDesc(&desc)) && desc.Format == D3DFMT_X8R8G8B8;
+      if (surface)
+        surface->Release();
+    }
+    check(shown, "both back buffers report X8R8G8B8 through GetDesc");
+    IDirect3DSwapChain9* swapChain = nullptr;
+    D3DPRESENT_PARAMETERS pp = {};
+    device->GetSwapChain(0, &swapChain);
+    check(swapChain && SUCCEEDED(swapChain->GetPresentParameters(&pp)) && pp.BackBufferFormat == D3DFMT_X8R8G8B8,
+          "the swap chain's present parameters report X8R8G8B8");
+    if (swapChain)
+      swapChain->Release();
+  }
+  device->UpdateSurface(ramp, nullptr, backBuffer, nullptr);  // the ramp again, up to 3 times white
+  {
+    D3DLOCKED_RECT locked = {};
+    int worst = 255;
+    if (SUCCEEDED(backBuffer->LockRect(&locked, nullptr, D3DLOCK_READONLY))) {
+      worst = 0;
+      for (UINT y = 0; y < kBackHeight; ++y)
+        for (UINT x = 0; x < kBackWidth; ++x)
+          worst = std::max(worst, rampDifference8(static_cast<const uint8_t*>(locked.pBits) + y * locked.Pitch + x * 4,
+                                                  x, y));
+      backBuffer->UnlockRect();
+    }
+    char what[120];
+    std::snprintf(what, sizeof what,
+                  "a read-only lock of the back buffer gets the frame as X8R8G8B8: largest difference %d/255", worst);
+    check(worst <= 1, what);
+  }
+  {
+    // A lock that writes: the rectangle lands in the back buffer, and the rest keeps its values above white.
+    const RECT rect = {8, 4, 24, 12};
+    D3DLOCKED_RECT locked = {};
+    const bool wrote = SUCCEEDED(backBuffer->LockRect(&locked, &rect, 0));
+    if (wrote) {
+      for (LONG y = 0; y < rect.bottom - rect.top; ++y) {
+        auto* row = reinterpret_cast<uint32_t*>(static_cast<char*>(locked.pBits) + y * locked.Pitch);
+        for (LONG x = 0; x < rect.right - rect.left; ++x)
+          row[x] = 0x00FF8000;  // red 255, green 128, blue 0
+      }
+      backBuffer->UnlockRect();
+    }
+    const std::vector<float> now = readFp16(device, backBuffer);
+    auto at = [&](UINT x, UINT y, int c) { return now[(size_t(y) * kBackWidth + x) * 4 + c]; };
+    float rgb[3];
+    rampColour(kBackWidth - 1, 30, rgb);
+    const bool ok = wrote && !now.empty() && std::fabs(at(10, 6, 0) - 1) < 0.002f &&
+                    std::fabs(at(10, 6, 1) - 128.0f / 255) < 0.002f && at(10, 6, 2) < 0.002f &&
+                    std::fabs(at(kBackWidth - 1, 30, 0) - rgb[0]) < kTolerance && at(30, 6, 0) > 0.1f;
+    check(ok, "a lock that writes changes only its rectangle, and highlights elsewhere stay above white");
+  }
+  {
+    IDirect3DSurface9* sysmem = nullptr;
+    device->CreateOffscreenPlainSurface(kBackWidth, kBackHeight, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sysmem, nullptr);
+    int worst = 255;
+    D3DLOCKED_RECT locked;
+    if (sysmem && SUCCEEDED(device->GetRenderTargetData(backBuffer, sysmem)) &&
+        SUCCEEDED(sysmem->LockRect(&locked, nullptr, D3DLOCK_READONLY))) {
+      worst = 0;
+      for (UINT y = 20; y < kBackHeight; ++y)  // below the rectangle written above
+        for (UINT x = 0; x < kBackWidth; ++x)
+          worst = std::max(worst, rampDifference8(static_cast<const uint8_t*>(locked.pBits) + y * locked.Pitch + x * 4,
+                                                  x, y));
+      sysmem->UnlockRect();
+    }
+    if (sysmem)
+      sysmem->Release();
+    char what[120];
+    std::snprintf(what, sizeof what, "GetRenderTargetData of the back buffer into X8R8G8B8: largest difference %d/255",
+                  worst);
+    check(worst <= 1, what);
+  }
+  {
+    // Full-screen A8R8G8B8 render targets become 16-bit float but report A8R8G8B8.
+    IDirect3DTexture9* texture = nullptr;
+    IDirect3DSurface9* level = nullptr;
+    D3DSURFACE_DESC levelDesc = {}, surfaceDesc = {};
+    device->CreateTexture(kBackWidth, kBackHeight, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &texture,
+                          nullptr);
+    if (texture) {
+      texture->GetLevelDesc(0, &levelDesc);
+      texture->GetSurfaceLevel(0, &level);
+    }
+    if (level)
+      level->GetDesc(&surfaceDesc);
+    check(levelDesc.Format == D3DFMT_A8R8G8B8 && surfaceDesc.Format == D3DFMT_A8R8G8B8,
+          "a full-screen A8R8G8B8 render target texture reports A8R8G8B8 (GetLevelDesc, and GetDesc of its surface)");
+    std::vector<float> copied;
+    if (level && SUCCEEDED(device->StretchRect(backBuffer, nullptr, level, nullptr, D3DTEXF_NONE)))
+      copied = readFp16(device, level);
+    float rgb[3];
+    rampColour(kBackWidth - 1, 30, rgb);
+    check(!copied.empty() && std::fabs(copied[(30 * size_t(kBackWidth) + kBackWidth - 1) * 4] - rgb[0]) < kTolerance,
+          "... and really is 16-bit float: it keeps the back buffer's values above white");
+    if (level)
+      level->Release();
+    if (texture)
+      texture->Release();
+
+    IDirect3DSurface9* target = nullptr;
+    D3DSURFACE_DESC targetDesc = {};
+    device->CreateRenderTarget(kBackWidth, kBackHeight, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &target,
+                               nullptr);
+    if (target)
+      target->GetDesc(&targetDesc);
+    check(targetDesc.Format == D3DFMT_A8R8G8B8 && target && !readFp16(device, target).empty(),
+          "a full-screen A8R8G8B8 render target surface reports A8R8G8B8 and really is 16-bit float");
+    if (target)
+      target->Release();
+
+    IDirect3DTexture9* own = nullptr;
+    D3DSURFACE_DESC ownDesc = {};
+    device->CreateTexture(kBackWidth, kBackHeight, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT,
+                          &own, nullptr);
+    if (own) {
+      own->GetLevelDesc(0, &ownDesc);
+      own->Release();
+    }
+    check(ownDesc.Format == D3DFMT_A16B16G16R16F, "a render target the game makes 16-bit float itself reports that");
   }
 
   ramp->Release();
