@@ -8,7 +8,8 @@ brighter than white, up to your display's peak. The HUD sits at a paper white yo
 
 Developed and tested on one machine: an RTX 5070 Ti, a 4K HDR OLED, Windows 11, the Viva New Vegas modlist, xNVSE
 6.4.8 and DXVK 3.0.1. Other setups are untested so far. If something looks wrong or breaks, please
-[open an issue](https://github.com/masonpetrosky/NewVegasHDR/issues) and attach `NewVegasHDR.log` from the game folder.
+[open an issue](https://github.com/masonpetrosky/NewVegasHDR/issues) or post on the
+[Nexus page](https://www.nexusmods.com/newvegas/mods/100146), and attach `NewVegasHDR.log` from the game folder.
 
 ## How it works
 
@@ -36,9 +37,10 @@ it, and writes the result to an 8-bit target that clips everything above 1. The 
 
 ## Install
 
-Download `NewVegasHDR-<version>.zip` from [Releases](https://github.com/masonpetrosky/NewVegasHDR/releases) and
-install it with your mod manager, or copy its `NVSE` folder into the game's `Data` folder. To undo, disable or remove
-the mod. The plugin writes `NewVegasHDR.log` in the game folder.
+Download `NewVegasHDR-<version>.zip` from [Nexus Mods](https://www.nexusmods.com/newvegas/mods/100146) or
+[Releases](https://github.com/masonpetrosky/NewVegasHDR/releases) and install it with your mod manager, or copy its
+`NVSE` folder into the game's `Data` folder. To undo, disable or remove the mod. The plugin writes `NewVegasHDR.log` in
+the game folder.
 
 `install.ps1 -Mo2 <MO2 folder>` installs your own build into Mod Organizer 2 (close Mod Organizer and the game first).
 
