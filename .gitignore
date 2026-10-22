@@ -1,0 +1,9 @@
+# build output, downloads, captures and extracted game files
+build/
+dist/
+captures/
+extracted/
+third_party/dxvk/
+*.log
+__pycache__/
+.venv/
