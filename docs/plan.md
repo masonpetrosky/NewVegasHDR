@@ -26,8 +26,15 @@ extension interfaces.
   target. Everything after that (image space effects, HUD) is 8-bit, ending in an `X8R8G8B8` back buffer. Values above
   1.0 are clipped at the blend pass.
 - **No import hooks.** The game imports only `D3DPERF_SetOptions` from `d3d9.dll` and gets `Direct3DCreate9` with
-  `GetProcAddress`. So the plugin creates an `IDirect3D9` of its own at load and patches the vtable that every
-  `IDirect3D9` shares, then patches the device's vtable when the game creates its device.
+  `GetProcAddress`. So the plugin hooks DXVK directly, and patches the device's vtable when the game creates its
+  device.
+- **Device creation is hooked inside DXVK, not in the vtable.** On some launches Windows' compatibility shim engine
+  (`apphelp.dll`) hooks `CreateDevice` in the vtable that every `IDirect3D9` shares. It always did on the first run of
+  a new executable here. It hooks it again at every `Direct3DCreate9` and calls straight through to the function it
+  found first, so a vtable hook installed in between is skipped. DXVK's `CreateDevice` calls its `CreateDeviceEx`
+  directly, so every route ends there. The plugin puts a jump over the start of that function (`src/detour.cpp`).
+  It moves only plain prologue instructions (DXVK 3.0.1's is `push ebp; mov ebp, esp; sub esp, 0x30`). If the
+  function starts otherwise, the plugin falls back to the vtable slot and says so in the log.
 
 ## The game's tonemapper
 
@@ -64,8 +71,9 @@ white at 2.5), and `pow 1/2.2` back. The plugin recognises VPT's shaders by its 
 
 ## The plugin's pipeline
 
-1. **Load** (`NVSEPlugin_Load`): call DXVK's `Direct3DCreate9`, check for `ID3D9VkExtInterface` (DXVK or not), and
-   patch `IDirect3D9::CreateDevice` (vtable slot 16) in the shared vtable.
+1. **Load** (`NVSEPlugin_Load`): call DXVK's `Direct3DCreate9` and check for `ID3D9VkExtInterface`. Without DXVK the
+   plugin does nothing more. With it, the plugin hooks DXVK's `CreateDeviceEx` in place, which `CreateDevice` also
+   goes through.
 2. **CreateDevice.** Find the window's display through DXGI (`IDXGIOutput6`: Windows HDR on or off, peak nits). HDR
    goes on when it is enabled in the ini, d3d9 is DXVK, and Windows HDR is on (or `ForceHdr`). Then:
    - `UnlockAdditionalFormats` on the game's own `IDirect3D9`: the unlock is per interface and copied into the device
@@ -129,6 +137,7 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
   - With HDR on they match wherever the original stayed below white, go above white where it clipped, and stay at or
     below the peak.
   - The plugin puts the game's c24/c25 back after each draw.
+  - Device creation is still caught when a stand-in for Windows' shim hooks `CreateDevice` over the plugin.
   - The presented scRGB frame is the decoded gamma frame, scaled to paper white and capped at the peak.
   - After the present the back buffer holds the game's frame again.
 

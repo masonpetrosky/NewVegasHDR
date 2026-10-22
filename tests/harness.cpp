@@ -3,9 +3,10 @@
 // 1. Renders the game's own HDR blend shaders (vanilla, and Vanilla Plus Tonemapper's, as extracted by tools/sdp.py)
 //    over a synthetic HDR scene: grey and coloured ramps from deep shadow to 65x over white, with and without bloom,
 //    at several exposures, half of them masked for the alpha mask variant.
-// 2. Loads the plugin the way xNVSE does, creates a device the way the game does and renders the same through the
-//    shaders the plugin swaps in. With SdrExact=1 they must match the originals. With HDR on they must still match
-//    wherever the originals stayed below white, and go above white (up to the peak) where the originals clipped.
+// 2. Loads the plugin the way xNVSE does, creates a device the way the game does (with CreateDevice hooked over the
+//    plugin, as Windows' compatibility shims do on some launches) and renders the same through the shaders the plugin
+//    swaps in. With SdrExact=1 they must match the originals. With HDR on they must still match wherever the
+//    originals stayed below white, and go above white (up to the peak) where the originals clipped.
 // 3. Triggers a frame trace and checks the plugin's decode: the scRGB frame it presents must be the gamma-space frame
 //    in linear light, scaled to paper white and capped at the peak. After the present the back buffer must hold the
 //    gamma-space frame again.
@@ -43,6 +44,28 @@ const Variant kVariants[] = {{"ISHDRBLENDINSHADER"}, {"ISHDRBLENDINSHADERCIN"}, 
 const char* const kLooks[] = {"sdp017", "vpt"};
 
 int g_failures = 0;
+
+// A stand-in for Windows' compatibility shims (apphelp.dll), which on some launches hook CreateDevice in the vtable
+// that every IDirect3D9 shares, hook it again at every Direct3DCreate9, and call straight through to what they found
+// first: anything hooked in that slot in between is skipped. The plugin has to see the device created anyway.
+using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*,
+                                                   IDirect3DDevice9**);
+CreateDeviceFn g_shimFoundCreateDevice = nullptr;
+
+HRESULT STDMETHODCALLTYPE shimCreateDevice(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
+                                           D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** device) {
+  return g_shimFoundCreateDevice(self, adapter, type, focus, flags, pp, device);
+}
+
+void shimHook(IDirect3D9* d3d) {
+  void** vtable = *reinterpret_cast<void***>(d3d);
+  if (!g_shimFoundCreateDevice)
+    g_shimFoundCreateDevice = reinterpret_cast<CreateDeviceFn>(vtable[16]);
+  DWORD protection;
+  VirtualProtect(&vtable[16], sizeof(void*), PAGE_READWRITE, &protection);
+  vtable[16] = reinterpret_cast<void*>(&shimCreateDevice);
+  VirtualProtect(&vtable[16], sizeof(void*), protection, &protection);
+}
 
 void check(bool ok, const char* what) {
   std::printf("%s %s\n", ok ? "  ok  " : "  FAIL", what);
@@ -352,6 +375,7 @@ int main(int argc, char** argv) {
   Image reference[2][3];
   {
     IDirect3D9* d3d = create(D3D_SDK_VERSION);
+    shimHook(d3d);
     IDirect3DDevice9* device = createDevice(d3d, hwnd);
     if (!device)
       return 1;
@@ -395,10 +419,7 @@ int main(int argc, char** argv) {
   check(load(&nvse), "NVSEPlugin_Load");
 
   IDirect3D9* d3d = create(D3D_SDK_VERSION);
-  {
-    void** vtable = *reinterpret_cast<void***>(d3d);
-    std::printf("  IDirect3D9 vtable %p, CreateDevice %p\n", static_cast<void*>(vtable), vtable[16]);
-  }
+  shimHook(d3d);  // as the shim does at every Direct3DCreate9, after the plugin has loaded
   IDirect3DDevice9* device = createDevice(d3d, hwnd);
   if (!device)
     return 1;
@@ -406,7 +427,8 @@ int main(int argc, char** argv) {
   device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
   D3DSURFACE_DESC bbDesc = {};
   backBuffer->GetDesc(&bbDesc);
-  check(bbDesc.Format == D3DFMT_A16B16G16R16F, "the back buffer became A16B16G16R16F");
+  check(bbDesc.Format == D3DFMT_A16B16G16R16F,
+        "the back buffer became A16B16G16R16F, with CreateDevice hooked over the plugin as Windows' shims do");
 
   Renderer renderer(device);
   Shaders shaders[2][3];

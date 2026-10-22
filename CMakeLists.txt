@@ -50,6 +50,7 @@ add_library(NewVegasHDR SHARED
   src/plugin.cpp
   src/config.cpp
   src/dds.cpp
+  src/detour.cpp
   src/display.cpp
   src/log.cpp
   src/shader_info.cpp

@@ -7,10 +7,12 @@ namespace vt {
 // IDirect3D9
 constexpr int kCreateDevice = 16;
 
+// IDirect3D9Ex
+constexpr int kCreateDeviceEx = 20;
+
 // IDirect3DDevice9
 constexpr int kReset = 16;
 constexpr int kPresent = 17;
-constexpr int kGetBackBuffer = 18;
 constexpr int kSetGammaRamp = 21;
 constexpr int kCreateTexture = 23;
 constexpr int kCreateRenderTarget = 28;
@@ -23,7 +25,6 @@ constexpr int kSetDepthStencilSurface = 39;
 constexpr int kBeginScene = 41;
 constexpr int kEndScene = 42;
 constexpr int kClear = 43;
-constexpr int kSetTexture = 65;
 constexpr int kDrawPrimitive = 81;
 constexpr int kDrawIndexedPrimitive = 82;
 constexpr int kDrawPrimitiveUP = 83;

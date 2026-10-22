@@ -16,6 +16,8 @@
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*,
                                                    IDirect3DDevice9**);
+using CreateDeviceExFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9Ex*, UINT, D3DDEVTYPE, HWND, DWORD,
+                                                     D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*, IDirect3DDevice9Ex**);
 using ResetFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
 using SetGammaRampFn = void(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, DWORD, const D3DGAMMARAMP*);
@@ -49,6 +51,7 @@ using SwapChainPresentFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DSwapChain9*, con
 
 struct Originals {
   CreateDeviceFn createDevice = nullptr;
+  CreateDeviceExFn createDeviceEx = nullptr;
   ResetFn reset = nullptr;
   PresentFn present = nullptr;
   SetGammaRampFn setGammaRamp = nullptr;
@@ -119,6 +122,7 @@ struct State {
   IDirect3DPixelShader9* pixelShader = nullptr;
   IDirect3DVertexShader9* vertexShader = nullptr;
   float psConstants[32][4] = {};
+  uint32_t drawsSincePresent = 0;  // a Present that never reaches the plugin shows up as draws without end
   // > 0 while this thread runs the plugin's own device calls: the hooks pass those through untouched.
   static inline thread_local int internal = 0;
 

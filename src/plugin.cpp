@@ -1,9 +1,10 @@
 // NewVegasHDR: HDR output for Fallout: New Vegas through DXVK.
 //
-// An xNVSE plugin that hooks the game's Direct3D 9 device (DXVK's) through its vtables. It gives the swap chain a
-// 16-bit float back buffer and DXVK's scRGB colour space, swaps in HDR versions of the game's tonemapping shaders,
-// upgrades the full-screen 8-bit render targets after them to 16-bit float, and decodes each finished frame (still in
-// the game's gamma space, HUD included) to scRGB just before it is presented. docs/plan.md has the design.
+// An xNVSE plugin that hooks DXVK's device creation, then the game's Direct3D 9 device through its vtables. It gives
+// the swap chain a 16-bit float back buffer and DXVK's scRGB colour space, swaps in HDR versions of the game's
+// tonemapping shaders, upgrades the full-screen 8-bit render targets after them to 16-bit float, and decodes each
+// finished frame (still in the game's gamma space, HUD included) to scRGB just before it is presented. docs/plan.md
+// has the design.
 #include <windows.h>
 #include <d3d9.h>
 
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "config.h"
+#include "detour.h"
 #include "display.h"
 #include "dxvk_ext.h"
 #include "log.h"
@@ -43,6 +45,16 @@ constexpr float kScrgbWhiteNits = 80;  // scRGB 1.0
 template <typename T>
 const DWORD* bytecode(const T& array) {
   return reinterpret_cast<const DWORD*>(array);
+}
+
+// The file name of the module that holds some code, for the log: who else hooks what.
+std::wstring moduleOf(const void* address) {
+  HMODULE module = nullptr;
+  wchar_t path[MAX_PATH] = L"?";
+  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         static_cast<LPCWSTR>(address), &module))
+    GetModuleFileNameW(module, path, MAX_PATH);
+  return std::filesystem::path(path).filename().wstring();
 }
 
 void logConfig() {
@@ -299,9 +311,25 @@ void noteCopy(const char* call, IDirect3DSurface9* from, IDirect3DSurface9* to) 
 
 // ---- Device hooks ---------------------------------------------------------------------------------------------
 
+// Logs who holds the Present slots if the game draws on and on without a Present reaching the plugin: something
+// hooked them after the plugin and skips it, and frames reach the screen without their decode.
+void notePresentBypass(IDirect3DDevice9* device) {
+  void* present = (*reinterpret_cast<void***>(device))[vt::kPresent];
+  void* swapChainPresent = nullptr;
+  IDirect3DSwapChain9* swapChain = nullptr;
+  if (SUCCEEDED(device->GetSwapChain(0, &swapChain))) {
+    swapChainPresent = (*reinterpret_cast<void***>(swapChain))[vt::kSwapChainPresent];
+    swapChain->Release();
+  }
+  LOG("no Present has reached the plugin for %u draws: device Present is %p (%ls), swap chain Present %p (%ls)",
+      g.drawsSincePresent, present, moduleOf(present).c_str(), swapChainPresent, moduleOf(swapChainPresent).c_str());
+}
+
 const HdrBlendShader* beforeDraw(IDirect3DDevice9* device, const char* call, UINT primitives) {
   if (device != g.device || g.internal)
     return nullptr;
+  if (++g.drawsSincePresent == 200000)
+    notePresentBypass(device);
   const HdrBlendShader* hdrBlend = g.findHdrBlend(g.pixelShader);
   if (hdrBlend) {
     if (hdrBlend->replaced)
@@ -355,6 +383,7 @@ HRESULT present(IDirect3DDevice9* device, Call&& call) {
   if (encoded)
     restoreFrame(device);
   ++g.frame;
+  g.drawsSincePresent = 0;
   trace::beginFrame();
   trace::poll();
   pollConfig();
@@ -689,10 +718,13 @@ void hookDevice(IDirect3DDevice9* device) {
   }
 }
 
-HRESULT STDMETHODCALLTYPE hookCreateDevice(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
-                                           D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** device) {
+// Creates the game's device with an FP16 back buffer when HDR can go on, then hooks it and switches it to scRGB.
+// `create` runs the original creation with the present parameters as they are when it is called.
+template <typename Create>
+HRESULT createDevice(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
+                     D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** device, Create&& create) {
   if (!pp || !device || g.device)
-    return g.d3d.createDevice(self, adapter, type, focus, flags, pp, device);
+    return create();
   logPresentParameters("CreateDevice", *pp);
   LOG("CreateDevice: adapter %u, type %d, behaviour flags 0x%lx", adapter, static_cast<int>(type), flags);
 
@@ -704,12 +736,10 @@ HRESULT STDMETHODCALLTYPE hookCreateDevice(IDirect3D9* self, UINT adapter, D3DDE
     LOG("display: not found through DXGI");
   logConfig();
 
-  bool fp16 = g.config.hdr && g.dxvk && (g.display.hdr || g.config.forceHdr);
+  bool fp16 = g.config.hdr && (g.display.hdr || g.config.forceHdr);
   if (!g.config.hdr)
     LOG("HDR is off in the ini");
-  else if (!g.dxvk)
-    LOG("HDR needs DXVK as the game's d3d9.dll; staying SDR");
-  else if (!g.display.hdr && !g.config.forceHdr)
+  else if (!fp16)
     LOG("Windows HDR is off for this display; staying SDR");
   if (fp16) {
     // The unlock is per IDirect3D9 object and copied into the device it creates.
@@ -724,12 +754,12 @@ HRESULT STDMETHODCALLTYPE hookCreateDevice(IDirect3D9* self, UINT adapter, D3DDE
   const D3DFORMAT asked = pp->BackBufferFormat;
   if (fp16)
     pp->BackBufferFormat = D3DFMT_A16B16G16R16F;
-  HRESULT hr = g.d3d.createDevice(self, adapter, type, focus, flags, pp, device);
+  HRESULT hr = create();
   if (FAILED(hr) && fp16) {
     LOG("CreateDevice with an FP16 back buffer failed (0x%08lx); retrying as the game asked", hr);
     pp->BackBufferFormat = asked;
     fp16 = false;
-    hr = g.d3d.createDevice(self, adapter, type, focus, flags, pp, device);
+    hr = create();
   }
   pp->BackBufferFormat = asked;  // the game keeps seeing what it asked for
   if (FAILED(hr)) {
@@ -755,6 +785,20 @@ HRESULT STDMETHODCALLTYPE hookCreateDevice(IDirect3D9* self, UINT adapter, D3DDE
   if (fp16)
     g.scrgb = enableScrgb(g.device);
   return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hookCreateDeviceEx(IDirect3D9Ex* self, UINT adapter, D3DDEVTYPE type, HWND focus,
+                                             DWORD flags, D3DPRESENT_PARAMETERS* pp, D3DDISPLAYMODEEX* mode,
+                                             IDirect3DDevice9Ex** device) {
+  return createDevice(self, adapter, type, focus, flags, pp, reinterpret_cast<IDirect3DDevice9**>(device),
+                      [&] { return g.d3d.createDeviceEx(self, adapter, type, focus, flags, pp, mode, device); });
+}
+
+// Only when CreateDeviceEx cannot be hooked inside DXVK.
+HRESULT STDMETHODCALLTYPE hookCreateDevice(IDirect3D9* self, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
+                                           D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** device) {
+  return createDevice(self, adapter, type, focus, flags, pp, device,
+                      [&] { return g.d3d.createDevice(self, adapter, type, focus, flags, pp, device); });
 }
 
 void init() {
@@ -796,12 +840,35 @@ void init() {
     g.dxvk = true;
     ext->Release();
   }
-  LOG("d3d9 is %s", g.dxvk ? "DXVK" : "not DXVK: HDR output needs DXVK");
-  // Every IDirect3D9 shares this vtable, the game's included.
+  if (!g.dxvk) {
+    LOG("d3d9 is not DXVK; HDR output needs DXVK, so the plugin does nothing");
+    d3d->Release();
+    return;
+  }
+  LOG("d3d9 is DXVK");
+
+  // Every route to a device ends in DXVK's CreateDeviceEx (its CreateDevice calls it directly), so the hook goes into
+  // that function's code. The CreateDevice slot of the vtable that every IDirect3D9 shares will not do: Windows'
+  // compatibility shims (apphelp.dll) hook it on some launches, and hook it again at every Direct3DCreate9, calling
+  // straight through to DXVK past anything hooked there before.
   void** vtable = *reinterpret_cast<void***>(d3d);
-  hook(d3d, vt::kCreateDevice, &hookCreateDevice, g.d3d.createDevice);
-  LOG("IDirect3D9 vtable %p: CreateDevice %p, now %p", static_cast<void*>(vtable),
-      reinterpret_cast<void*>(g.d3d.createDevice), vtable[vt::kCreateDevice]);
+  void* createDevice = vtable[vt::kCreateDevice];
+  void* createDeviceEx = vtable[vt::kCreateDeviceEx];
+  LOG("IDirect3D9 vtable %p: CreateDevice %p (%ls), CreateDeviceEx %p (%ls)", static_cast<void*>(vtable),
+      createDevice, moduleOf(createDevice).c_str(), createDeviceEx, moduleOf(createDeviceEx).c_str());
+  HMODULE owner = nullptr;
+  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                     static_cast<LPCWSTR>(createDeviceEx), &owner);
+  void* trampoline =
+      owner == d3d9 ? detour::install(createDeviceEx, reinterpret_cast<void*>(&hookCreateDeviceEx)) : nullptr;
+  if (trampoline) {
+    g.d3d.createDeviceEx = reinterpret_cast<CreateDeviceExFn>(trampoline);
+    LOG("device creation hooked inside DXVK");
+  } else {
+    hook(d3d, vt::kCreateDevice, &hookCreateDevice, g.d3d.createDevice);
+    LOG("device creation could not be hooked inside DXVK; hooked the vtable's CreateDevice instead, which another "
+        "hook can take back");
+  }
   d3d->Release();
 }
 

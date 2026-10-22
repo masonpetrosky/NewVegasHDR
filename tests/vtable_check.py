@@ -20,6 +20,7 @@ def main():
     ours = open(sys.argv[2]).read()
     tables = {
         "IDirect3D9": methods(header, "IDirect3D9"),
+        "IDirect3D9Ex": methods(header, "IDirect3D9Ex"),
         "IDirect3DDevice9": methods(header, "IDirect3DDevice9"),
         "IDirect3DSwapChain9": methods(header, "IDirect3DSwapChain9"),
     }
