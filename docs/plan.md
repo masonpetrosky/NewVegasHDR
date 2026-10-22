@@ -101,8 +101,22 @@ white at 2.5), and `pow 1/2.2` back. The plugin recognises VPT's shaders by its 
      `ShoulderStart x peak` alone and rolls the rest off exponentially towards the peak. It works on the brightest
      channel, so hues hold, and it is continuous in value and slope. The value then goes back to gamma.
 
+   VPT's curve squeezes nearly everything under white. In the first in-game capture (Goodsprings, daylight) only
+   0.04 % of the pixels went above it: the saloon's light bulbs. The sky averaged 109 nits, and HDR looked the same as
+   SDR. So in HDR the curve can be stretched: its Reinhard runs on luminance / k, with
+   `k = 1 + HighlightRange x (peak / paper white - 1)`. With `HighlightRange=1` (the default) skies, sunlit ground
+   and lights use the display's range, and shadows barely move (within 1.5 % below a quarter of white). Replayed on
+   that capture, the sky averages 158 nits and the frame 81 instead of 57. `HighlightRange=0` is the SDR curve. The
+   game's own look has no curve, so it already uses the full range: 183 nits for that sky.
+
    The output stays in the game's gamma space, so every later pass (image space effects, HUD) works on what it
-   always did. It only goes above 1 where the old target clipped. The plugin's constants go in c24 (peak / paper white,
+   always did. It only goes above 1 where the old target clipped, or where the stretched curve reaches.
+
+   The output alpha (`BlurScale.z`) is what the game's target would keep of it. The game sometimes leaves that
+   constant unset (NaN in the capture):
+   - the back buffer the game made `X8R8G8B8` gets 1;
+   - an 8-bit target the plugin made 16-bit float gets the value clipped to [0, 1];
+   - a float target of the game's own gets the value as it is. The plugin's constants go in c24 (peak / paper white,
    look, HDR on, shoulder start) and c25 (gamma, 1 / gamma). They are set before each draw of the shader and put back
    after it, in case the engine skips setting constants it thinks are already there.
 5. **Render targets.** Full-screen `A8R8G8B8` render targets (exactly the back buffer's size, not shared, not lockable)
@@ -141,6 +155,7 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
 | `PeakNits` | 0 | display peak; 0 = what Windows reports (1000 if it reports nothing usable) |
 | `PaperWhiteNits` | 203 | brightness of SDR white, HUD and menus |
 | `ToneMapper` | Auto | `Auto` follows the shaders the game loaded, or `Vanilla` / `VanillaPlus` |
+| `HighlightRange` | 1 | how much of the display's range VPT's curve may use: 0 = as in SDR, 1 = up to the peak |
 | `ShoulderStart` | 0.5 | start of the highlight roll-off, as a fraction of the peak |
 | `Gamma` | 2.2 | decode gamma of the game's image |
 | `[Advanced] ReplaceShaders` | 1 | swap in our HDR blend shaders |
@@ -155,8 +170,12 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
   and renders a synthetic HDR scene through the original shaders (vanilla and VPT, all three variants) and through
   the plugin's. The checks:
   - With `SdrExact=1` the plugin's shaders match exactly.
-  - With HDR on they match wherever the original stayed below white, go above white where it clipped, and stay at or
-    below the peak.
+  - With HDR on and `HighlightRange=0` they match wherever the original stayed below white, go above white where it
+    clipped, and stay at or below the peak.
+  - With `HighlightRange=1` VPT's look gets brighter highlights, no pixel gets darker by its brightest channel, the
+    shadows stay within 3 %, and the peak still holds. The game's own look does not change.
+  - The output alpha is 1 on the back buffer, clipped on an upgraded 8-bit target (NaN gives 0), and unchanged on a
+    float target of the game's own.
   - The plugin puts the game's c24/c25 back after each draw.
   - Device creation is still caught when a stand-in for Windows' shim hooks `CreateDevice` over the plugin.
   - The presented scRGB frame is the decoded gamma frame, scaled to paper white and capped at the peak.
@@ -178,9 +197,11 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
 
 ## Open questions and next steps
 
-- How bright the game's highlights really are in daylight, interiors and at night: capture traces and tune
-  `PaperWhiteNits`, `ShoulderStart` and the peak. On OLEDs, large bright areas such as the desert sky trigger the
-  panel's brightness limiter, so the defaults should keep big areas modest.
+- How bright the game's highlights really are in interiors and at night (daylight is above, under step 4): capture
+  traces and tune `PaperWhiteNits`, `HighlightRange`, `ShoulderStart` and the peak. On OLEDs, large bright areas
+  such as the desert sky trigger the panel's brightness limiter, so the defaults should keep big areas modest. The
+  first capture's daylight frame averaged 57 nits (81 with `HighlightRange=1`), well under this panel's 277 nits
+  full-frame limit.
 - What reads the upgraded targets or the back buffer back to the CPU (save game thumbnails, screenshots): the `copy`
   lines and the lines naming a caller in the log show it. Check that saves still get thumbnails.
 - The back buffer now has an alpha channel that holds what the game's draws wrote, where `X8R8G8B8` read as 1. A draw

@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -171,7 +172,24 @@ class Renderer {
   Image render(IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps) {
     IDirect3DSurface9* surface = nullptr;
     target_->GetSurfaceLevel(0, &surface);
-    device_->SetRenderTarget(0, surface);
+    draw(vs, ps, surface, 1);
+    device_->GetRenderTargetData(surface, readback_);
+    surface->Release();
+    Image image(kWidth * kHeight * 4);
+    D3DLOCKED_RECT locked;
+    readback_->LockRect(&locked, nullptr, D3DLOCK_READONLY);
+    for (UINT y = 0; y < kHeight; ++y) {
+      const auto* row = reinterpret_cast<const uint16_t*>(static_cast<const char*>(locked.pBits) + y * locked.Pitch);
+      for (UINT i = 0; i < kWidth * 4; ++i)
+        image[y * kWidth * 4 + i] = halfToFloat(row[i]);
+    }
+    readback_->UnlockRect();
+    return image;
+  }
+
+  // Draws the pass into the top left of `target`, with the game's output alpha (BlurScale.z) set to `alpha`.
+  void draw(IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps, IDirect3DSurface9* target, float alpha) {
+    device_->SetRenderTarget(0, target);
     D3DVIEWPORT9 viewport = {0, 0, kWidth, kHeight, 0, 1};
     device_->SetViewport(&viewport);
     device_->SetRenderState(D3DRS_ZENABLE, FALSE);
@@ -189,7 +207,7 @@ class Renderer {
     // The game's image space vertex shader: c0 shifts the quad by half a pixel, c1 and c2 offset the two texcoords.
     const float vsConstants[3][4] = {{0.5f / kWidth, 0.5f / kHeight, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
     device_->SetVertexShaderConstantF(0, vsConstants[0], 3);
-    const float hdrParam[4] = {0.5f, 0, 0, 0}, blurScale[4] = {0, 0, 1, 0};
+    const float hdrParam[4] = {0.5f, 0, 0, 0}, blurScale[4] = {0, 0, alpha, 0};
     const float cinematic[4] = {1.15f, 0.5f, 1.08f, 0.95f}, tint[4] = {1, 0.85f, 0.7f, 0.15f};
     const float fade[4] = {0.1f, 0.1f, 0.1f, 0.05f}, alphaMask[4] = {0, 0, 0, 0.6f};
     device_->SetPixelShaderConstantF(1, hdrParam, 1);
@@ -212,18 +230,6 @@ class Renderer {
     float after[2][4] = {};
     device_->GetPixelShaderConstantF(24, after[0], 2);
     constantsKept_ &= std::memcmp(after, borrowed, sizeof after) == 0;
-    device_->GetRenderTargetData(surface, readback_);
-    surface->Release();
-    Image image(kWidth * kHeight * 4);
-    D3DLOCKED_RECT locked;
-    readback_->LockRect(&locked, nullptr, D3DLOCK_READONLY);
-    for (UINT y = 0; y < kHeight; ++y) {
-      const auto* row = reinterpret_cast<const uint16_t*>(static_cast<const char*>(locked.pBits) + y * locked.Pitch);
-      for (UINT i = 0; i < kWidth * 4; ++i)
-        image[y * kWidth * 4 + i] = halfToFloat(row[i]);
-    }
-    readback_->UnlockRect();
-    return image;
   }
 
  private:
@@ -295,11 +301,18 @@ void release(Shaders& s) {
   s = {};
 }
 
-void writeIni(const fs::path& path, bool sdrExact) {
+void writeIni(const fs::path& path, bool sdrExact, float highlightRange = 0) {
   std::ofstream f(path);
   f << "[HDR]\nEnabled=1\nPeakNits=" << kPeakNits << "\nPaperWhiteNits=" << kPaperWhiteNits
-    << "\nShoulderStart=0.5\nGamma=" << kGamma << "\n[Advanced]\nSdrExact=" << (sdrExact ? 1 : 0)
-    << "\nForceHdr=1\n";
+    << "\nHighlightRange=" << highlightRange << "\nShoulderStart=0.5\nGamma=" << kGamma
+    << "\n[Advanced]\nSdrExact=" << (sdrExact ? 1 : 0) << "\nForceHdr=1\n";
+}
+
+// Rewrites the ini and presents until the plugin has read it again (it looks every 60 frames).
+void applyIni(IDirect3DDevice9* device, const fs::path& path, bool sdrExact, float highlightRange = 0) {
+  writeIni(path, sdrExact, highlightRange);
+  for (int i = 0; i < 61; ++i)
+    device->Present(nullptr, nullptr, nullptr, nullptr);
 }
 
 // Largest difference between an original (clipped to [0, 1] as the game's 8-bit target does) and ours. Prints where
@@ -491,15 +504,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  // HDR: rewrite the ini; the plugin reads it again within 60 frames.
-  writeIni(ini, false);
-  for (int i = 0; i < 61; ++i)
-    device->Present(nullptr, nullptr, nullptr, nullptr);
-  std::printf("with the plugin, HDR:\n");
+  // HDR with Vanilla Plus's curve as in SDR.
+  applyIni(device, ini, false, 0);
+  std::printf("with the plugin, HDR, HighlightRange=0:\n");
   const float peakGamma = std::pow(kPeakNits / kPaperWhiteNits, 1 / kGamma);
+  Image exactHdr[2][3];
   for (int l = 0; l < 2; ++l) {
     for (int v = 0; v < 3; ++v) {
       const Image ours = renderer.render(shaders[l][v].vs, shaders[l][v].ps);
+      exactHdr[l][v] = ours;
       const float diff = maxDifference(reference[l][v], ours, true);
       int above = 0;
       float top = 0;
@@ -514,6 +527,79 @@ int main(int argc, char** argv) {
                     kLooks[l], kVariants[v].name, diff, above, top, peakGamma);
       check(diff <= kTolerance && above > 0 && top <= peakGamma * 1.002f, what);
     }
+  }
+
+  // HDR with Vanilla Plus's curve stretched over the display's whole range: brighter in the highlights, no pixel darker
+  // (by its brightest channel: the shoulder scales a highlight's channels together, so a weaker channel may drop a
+  // little when the strongest grows), shadows (below a quarter of white) within 3 %, the peak still the limit. The
+  // game's own look has no curve to stretch.
+  applyIni(device, ini, false, 1);
+  std::printf("with the plugin, HDR, HighlightRange=1:\n");
+  for (int l = 0; l < 2; ++l) {
+    for (int v = 0; v < 3; ++v) {
+      const Image ours = renderer.render(shaders[l][v].vs, shaders[l][v].ps);
+      const Image& exact = exactHdr[l][v];
+      float darker = 0, changed = 0, shadowShift = 0, top = 0;
+      int brighter = 0;
+      for (size_t p = 0; p < ours.size(); p += 4) {
+        const bool shadow = exact[p] < 0.25f && exact[p + 1] < 0.25f && exact[p + 2] < 0.25f;
+        darker = std::max(darker, std::max({exact[p], exact[p + 1], exact[p + 2]}) -
+                                      std::max({ours[p], ours[p + 1], ours[p + 2]}));
+        for (int c = 0; c < 3; ++c) {
+          changed = std::max(changed, std::fabs(ours[p + c] - exact[p + c]));
+          brighter += ours[p + c] > exact[p + c] + 0.01f;
+          top = std::max(top, ours[p + c]);
+          if (shadow)
+            shadowShift = std::max(shadowShift, std::fabs(ours[p + c] - exact[p + c]) / std::max(exact[p + c], 0.02f));
+        }
+      }
+      char what[200];
+      if (l == 0) {
+        std::snprintf(what, sizeof what, "%-6s %-24s unchanged: largest difference %.5f", kLooks[l], kVariants[v].name,
+                      changed);
+        check(changed <= kTolerance, what);
+      } else {
+        std::snprintf(what, sizeof what,
+                      "%-6s %-24s %d values brighter, none darker (%.5f), shadows within %.1f %%, brightest %.3f",
+                      kLooks[l], kVariants[v].name, brighter, darker, shadowShift * 100, top);
+        check(brighter > 0 && darker <= kTolerance && shadowShift < 0.03f && top <= peakGamma * 1.002f, what);
+      }
+    }
+  }
+
+  // The output alpha as the target the game asked for keeps it, also when the game leaves it unset (NaN).
+  {
+    IDirect3DTexture9* upgraded = nullptr;  // an 8-bit target the plugin makes 16-bit float
+    IDirect3DTexture9* own = nullptr;  // a 16-bit float target of the game's own
+    IDirect3DSurface9* upgradedLevel = nullptr;
+    IDirect3DSurface9* ownLevel = nullptr;
+    device->CreateTexture(kBackWidth, kBackHeight, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                          &upgraded, nullptr);
+    device->CreateTexture(kBackWidth, kBackHeight, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT,
+                          &own, nullptr);
+    if (upgraded)
+      upgraded->GetSurfaceLevel(0, &upgradedLevel);
+    if (own)
+      own->GetSurfaceLevel(0, &ownLevel);
+    auto alphaLeft = [&](IDirect3DSurface9* target, float alpha) {
+      if (!target)
+        return -1.0f;
+      renderer.draw(shaders[1][1].vs, shaders[1][1].ps, target, alpha);
+      const std::vector<float> rgba = readFp16(device, target);
+      return rgba.empty() ? -1.0f : rgba[(10 * size_t(kBackWidth) + 10) * 4 + 3];
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float back = alphaLeft(backBuffer, nan), upNan = alphaLeft(upgradedLevel, nan);
+    const float upHigh = alphaLeft(upgradedLevel, 2.5f), mine = alphaLeft(ownLevel, 2.5f);
+    char what[200];
+    std::snprintf(what, sizeof what,
+                  "output alpha: back buffer %g (1), 8-bit target %g and %g (0 for NaN, 1 for 2.5), the game's own "
+                  "16-bit float target %g (2.5)",
+                  back, upNan, upHigh, mine);
+    check(back == 1 && upNan == 0 && upHigh == 1 && mine == 2.5f, what);
+    for (IUnknown* u : std::initializer_list<IUnknown*>{upgradedLevel, ownLevel, upgraded, own})
+      if (u)
+        u->Release();
   }
   check(renderer.constantsKept(), "the game's own c24 and c25 are back after each of our draws");
 

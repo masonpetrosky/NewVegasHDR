@@ -9,6 +9,7 @@
 #include <d3d9.h>
 #include <intrin.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -61,11 +62,11 @@ std::wstring moduleOf(const void* address) {
 
 void logConfig() {
   const Config& c = g.config;
-  LOG("config: HDR %d, peak %.0f nits (%s), paper white %.0f nits, tonemapper %s, shoulder at %.2f of peak, gamma %.2f;"
-      " replace shaders %d, upgrade render targets %d, SDR exact %d, force HDR %d",
+  LOG("config: HDR %d, peak %.0f nits (%s), paper white %.0f nits, tonemapper %s, highlight range %.2f, shoulder at "
+      "%.2f of peak, gamma %.2f; replace shaders %d, upgrade render targets %d, SDR exact %d, force HDR %d",
       c.hdr, g.peakNits(), c.peakNits > 0 ? "from the ini" : "from Windows", c.paperWhiteNits,
       c.toneMapper == ToneMapper::Auto ? "auto" : (c.toneMapper == ToneMapper::Vanilla ? "vanilla" : "Vanilla Plus"),
-      c.shoulderStart, c.gamma, c.replaceShaders, c.upgradeRenderTargets, c.sdrExact, c.forceHdr);
+      c.highlightRange, c.shoulderStart, c.gamma, c.replaceShaders, c.upgradeRenderTargets, c.sdrExact, c.forceHdr);
 }
 
 void logPresentParameters(const char* what, const D3DPRESENT_PARAMETERS& pp) {
@@ -246,15 +247,28 @@ void restoreFrame(IDirect3DDevice9* device) {
   drawFrameCopy(device, {1, 65504, 1, 0});
 }
 
+// What the target of an HDR blend draw keeps of the shader's alpha, as hdr_blend.hlsl's Alpha() takes it: 2 for the
+// back buffer when the game made it without alpha, 1 for an 8-bit target the plugin made 16-bit float, 0 otherwise.
+float targetAlphaMode() {
+  IDirect3DSurface9* target = g.renderTarget0;
+  if (!target)
+    return 0;
+  if (target == g.backBuffer)
+    return g.gameFormat == D3DFMT_A8R8G8B8 || g.gameFormat == D3DFMT_A2R10G10B10 ? 1.0f : 2.0f;
+  return masquerade::shownFormat(target) != D3DFMT_UNKNOWN ? 1.0f : 0.0f;
+}
+
 // The tonemap constants of our HDR blend shaders (c24 and c25), set before each of their draws and put back to the
 // game's values after it, in case the engine skips setting constants it believes are already there.
 void setToneMapConstants(IDirect3DDevice9* device, const HdrBlendShader& shader) {
   const ToneMapper mode = g.config.toneMapper;
   const bool vanillaPlus = mode == ToneMapper::Auto ? shader.vanillaPlus : mode == ToneMapper::VanillaPlus;
   const bool hdr = g.scrgb && !g.config.sdrExact;
-  const float c[2][4] = {
-      {g.peakNits() / g.config.paperWhiteNits, vanillaPlus ? 1.0f : 0.0f, hdr ? 1.0f : 0.0f, g.config.shoulderStart},
-      {g.config.gamma, 1 / g.config.gamma, 0, 0}};
+  const float peak = g.peakNits() / g.config.paperWhiteNits;  // in units of paper white
+  // Vanilla Plus's curve, stretched from white (1) towards the peak by HighlightRange.
+  const float stretch = hdr ? std::max(1.0f, 1 + g.config.highlightRange * (peak - 1)) : 1.0f;
+  const float c[2][4] = {{peak, vanillaPlus ? 1.0f : 0.0f, hdr ? 1.0f : 0.0f, g.config.shoulderStart},
+                         {g.config.gamma, 1 / g.config.gamma, stretch, targetAlphaMode()}};
   g.d3d.setPixelShaderConstantF(device, 24, c[0], 2);
 }
 

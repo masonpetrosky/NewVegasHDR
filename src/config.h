@@ -13,6 +13,7 @@ struct Config {
   float paperWhiteNits = 203;
   ToneMapper toneMapper = ToneMapper::Auto;
   float shoulderStart = 0.5f;  // fraction of the peak where highlights start to roll off
+  float highlightRange = 1;  // how much of the display's range Vanilla Plus Tonemapper's curve may use (0 = as in SDR)
   float gamma = 2.2f;  // how the game's SDR output is decoded to light
 
   // [Advanced]

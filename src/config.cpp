@@ -34,6 +34,7 @@ bool loadConfig(const std::wstring& path, Config& config) {
   readFloat(path, L"HDR", L"PeakNits", c.peakNits);
   readFloat(path, L"HDR", L"PaperWhiteNits", c.paperWhiteNits);
   readFloat(path, L"HDR", L"ShoulderStart", c.shoulderStart);
+  readFloat(path, L"HDR", L"HighlightRange", c.highlightRange);
   readFloat(path, L"HDR", L"Gamma", c.gamma);
   std::wstring toneMapper = readString(path, L"HDR", L"ToneMapper");
   if (_wcsicmp(toneMapper.c_str(), L"Vanilla") == 0)
@@ -56,6 +57,10 @@ bool loadConfig(const std::wstring& path, Config& config) {
     c.shoulderStart = 0.1f;
   if (c.shoulderStart > 0.95f)
     c.shoulderStart = 0.95f;
+  if (!(c.highlightRange >= 0))
+    c.highlightRange = 0;
+  if (c.highlightRange > 1)
+    c.highlightRange = 1;
   if (c.gamma < 1.5f || c.gamma > 3)
     c.gamma = 2.2f;
   config = c;

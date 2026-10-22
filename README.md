@@ -45,6 +45,8 @@ mod. The plugin writes `NewVegasHDR.log` in the game folder.
 
 - `PeakNits`: the display's peak; 0 uses what Windows reports.
 - `PaperWhiteNits`: how bright white is (HUD, menus, what was white in SDR), 203 by default.
+- `HighlightRange`: how much of the display's range Vanilla Plus Tonemapper's curve may use. 1 (the default) lets
+  skies, sunlit ground and lights get brighter; 0 keeps its SDR curve, so only what clipped at white gets brighter.
 - `ShoulderStart`: where highlights start rolling off, as a fraction of the peak.
 - `ToneMapper`: `Auto` keeps whatever look the game loaded; `Vanilla` and `VanillaPlus` force one.
 - `Gamma`: how the game's image is decoded, 2.2 by default.

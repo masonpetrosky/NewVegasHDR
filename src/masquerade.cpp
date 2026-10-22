@@ -231,7 +231,15 @@ void tagTexture(IDirect3DTexture9* texture, D3DFORMAT shown) {
 }
 
 void tagBackBuffers(IDirect3DDevice9* device, D3DFORMAT shown) {
-  for (UINT i = 0; i < 4; ++i) {
+  UINT count = 1;
+  IDirect3DSwapChain9* swapChain = nullptr;
+  if (SUCCEEDED(device->GetSwapChain(0, &swapChain))) {
+    D3DPRESENT_PARAMETERS pp = {};
+    if (SUCCEEDED(swapChain->GetPresentParameters(&pp)) && pp.BackBufferCount)
+      count = pp.BackBufferCount;
+    swapChain->Release();
+  }
+  for (UINT i = 0; i < count; ++i) {
     IDirect3DSurface9* backBuffer = nullptr;
     if (FAILED(device->GetBackBuffer(0, i, D3DBACKBUFFER_TYPE_MONO, &backBuffer)))
       break;
