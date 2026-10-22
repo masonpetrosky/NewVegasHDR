@@ -41,6 +41,8 @@ bool loadConfig(const std::wstring& path, Config& config) {
     c.toneMapper = ToneMapper::Vanilla;
   else if (_wcsicmp(toneMapper.c_str(), L"VanillaPlus") == 0)
     c.toneMapper = ToneMapper::VanillaPlus;
+  else if (_wcsicmp(toneMapper.c_str(), L"Auto") == 0)
+    c.toneMapper = ToneMapper::Auto;
   readBool(path, L"Advanced", L"ReplaceShaders", c.replaceShaders);
   readBool(path, L"Advanced", L"UpgradeRenderTargets", c.upgradeRenderTargets);
   readBool(path, L"Advanced", L"SdrExact", c.sdrExact);

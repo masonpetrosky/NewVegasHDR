@@ -138,6 +138,7 @@ struct State {
   static inline thread_local int internal = 0;
 
   float peakNits() const;
+  bool vanillaPlusCurve(const HdrBlendShader& shader) const;  // the curve a draw of this shader runs
   const HdrBlendShader* findHdrBlend(const IDirect3DPixelShader9* shader);
 };
 

@@ -261,8 +261,7 @@ float targetAlphaMode() {
 // The tonemap constants of our HDR blend shaders (c24 and c25), set before each of their draws and put back to the
 // game's values after it, in case the engine skips setting constants it believes are already there.
 void setToneMapConstants(IDirect3DDevice9* device, const HdrBlendShader& shader) {
-  const ToneMapper mode = g.config.toneMapper;
-  const bool vanillaPlus = mode == ToneMapper::Auto ? shader.vanillaPlus : mode == ToneMapper::VanillaPlus;
+  const bool vanillaPlus = g.vanillaPlusCurve(shader);
   const bool hdr = g.scrgb && !g.config.sdrExact;
   const float peak = g.peakNits() / g.config.paperWhiteNits;  // in units of paper white
   // Vanilla Plus's curve, stretched from white (1) towards the peak by HighlightRange.
@@ -308,7 +307,7 @@ void noteHdrBlendDraw(IDirect3DDevice9* device, const HdrBlendShader& shader) {
       return;
   seen.push_back(key);
   LOG("HDR blend draw: %s (%s, %s) writes %s; bloom %s; scene %s", hdrBlendName(shader.kind),
-      shader.replaced ? "ours" : "the game's", shader.vanillaPlus ? "Vanilla Plus curve" : "vanilla curve",
+      shader.replaced ? "ours" : "the game's", g.vanillaPlusCurve(shader) ? "Vanilla Plus curve" : "vanilla curve",
       trace::describeTarget(device).c_str(), trace::describeStage(device, 0).c_str(),
       trace::describeStage(device, 1).c_str());
 }
@@ -919,6 +918,14 @@ float State::peakNits() const {
   if (display.found && display.maxNits >= 100)
     return display.maxNits;
   return 1000;
+}
+
+// ToneMapper picks the look of HDR output. SDR output and SdrExact keep the curve of the shader the game loaded, so
+// that they look as the game does without the plugin.
+bool State::vanillaPlusCurve(const HdrBlendShader& shader) const {
+  if (!shader.replaced || !scrgb || config.sdrExact || config.toneMapper == ToneMapper::Auto)
+    return shader.vanillaPlus;
+  return config.toneMapper == ToneMapper::VanillaPlus;
 }
 
 const HdrBlendShader* State::findHdrBlend(const IDirect3DPixelShader9* shader) {

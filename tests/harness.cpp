@@ -301,16 +301,20 @@ void release(Shaders& s) {
   s = {};
 }
 
-void writeIni(const fs::path& path, bool sdrExact, float highlightRange = 0) {
+// toneMapper null leaves the key out, for the plugin's default.
+void writeIni(const fs::path& path, bool sdrExact, float highlightRange = 0, const char* toneMapper = "Auto") {
   std::ofstream f(path);
   f << "[HDR]\nEnabled=1\nPeakNits=" << kPeakNits << "\nPaperWhiteNits=" << kPaperWhiteNits
-    << "\nHighlightRange=" << highlightRange << "\nShoulderStart=0.5\nGamma=" << kGamma
-    << "\n[Advanced]\nSdrExact=" << (sdrExact ? 1 : 0) << "\nForceHdr=1\n";
+    << "\nHighlightRange=" << highlightRange << "\nShoulderStart=0.5\nGamma=" << kGamma << "\n";
+  if (toneMapper)
+    f << "ToneMapper=" << toneMapper << "\n";
+  f << "[Advanced]\nSdrExact=" << (sdrExact ? 1 : 0) << "\nForceHdr=1\n";
 }
 
 // Rewrites the ini and presents until the plugin has read it again (it looks every 60 frames).
-void applyIni(IDirect3DDevice9* device, const fs::path& path, bool sdrExact, float highlightRange = 0) {
-  writeIni(path, sdrExact, highlightRange);
+void applyIni(IDirect3DDevice9* device, const fs::path& path, bool sdrExact, float highlightRange = 0,
+              const char* toneMapper = "Auto") {
+  writeIni(path, sdrExact, highlightRange, toneMapper);
   for (int i = 0; i < 61; ++i)
     device->Present(nullptr, nullptr, nullptr, nullptr);
 }
@@ -565,6 +569,30 @@ int main(int argc, char** argv) {
         check(brighter > 0 && darker <= kTolerance && shadowShift < 0.03f && top <= peakGamma * 1.002f, what);
       }
     }
+  }
+
+  // ToneMapper picks the look of HDR output only: SdrExact (like SDR output) keeps Vanilla Plus's own image even with
+  // ToneMapper=Vanilla, and HDR without the key (the default) gives the game's own look over Vanilla Plus's shaders.
+  applyIni(device, ini, true, 1, "Vanilla");
+  std::printf("with the plugin, SdrExact=1, ToneMapper=Vanilla:\n");
+  for (int v = 0; v < 3; ++v) {
+    const float diff = maxDifference(reference[1][v], renderer.render(shaders[1][v].vs, shaders[1][v].ps), false);
+    char what[160];
+    std::snprintf(what, sizeof what, "vpt    %-24s still Vanilla Plus's own: largest difference %.5f",
+                  kVariants[v].name, diff);
+    check(diff <= kTolerance, what);
+  }
+  applyIni(device, ini, false, 1, nullptr);
+  std::printf("with the plugin, HDR, no ToneMapper key:\n");
+  for (int v = 0; v < 3; ++v) {
+    const Image ours = renderer.render(shaders[1][v].vs, shaders[1][v].ps);
+    float diff = 0;
+    for (size_t i = 0; i < ours.size(); ++i)
+      diff = std::max(diff, std::fabs(ours[i] - exactHdr[0][v][i]));
+    char what[160];
+    std::snprintf(what, sizeof what, "vpt    %-24s gives the game's own look: largest difference %.5f",
+                  kVariants[v].name, diff);
+    check(diff <= kTolerance, what);
   }
 
   // The output alpha as the target the game asked for keeps it, also when the game leaves it unset (NaN).

@@ -251,9 +251,10 @@ void draw(IDirect3DDevice9* device, const char* call, UINT primitives, const Hdr
     line("    HDR blend %s (%s, %s): c1 %g %g %g %g, c2 %g %g %g %g, c19 %g %g %g %g, c20 %g %g %g %g, "
          "c22 %g %g %g %g, c23 %g %g %g %g",
          hdrBlendName(hdrBlend->kind), hdrBlend->replaced ? "ours" : "game's",
-         hdrBlend->vanillaPlus ? "Vanilla Plus curve" : "vanilla curve", g.psConstants[1][0], g.psConstants[1][1],
-         g.psConstants[1][2], g.psConstants[1][3], g.psConstants[2][0], g.psConstants[2][1], g.psConstants[2][2],
-         g.psConstants[2][3], g.psConstants[19][0], g.psConstants[19][1], g.psConstants[19][2], g.psConstants[19][3],
+         g.vanillaPlusCurve(*hdrBlend) ? "Vanilla Plus curve" : "vanilla curve",
+         g.psConstants[1][0], g.psConstants[1][1], g.psConstants[1][2], g.psConstants[1][3], g.psConstants[2][0],
+         g.psConstants[2][1], g.psConstants[2][2], g.psConstants[2][3], g.psConstants[19][0], g.psConstants[19][1],
+         g.psConstants[19][2], g.psConstants[19][3],
          g.psConstants[20][0], g.psConstants[20][1], g.psConstants[20][2], g.psConstants[20][3], g.psConstants[22][0],
          g.psConstants[22][1], g.psConstants[22][2], g.psConstants[22][3], g.psConstants[23][0], g.psConstants[23][1],
          g.psConstants[23][2], g.psConstants[23][3]);

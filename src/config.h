@@ -11,7 +11,7 @@ struct Config {
   bool hdr = true;
   float peakNits = 0;  // 0: the display's own value, from Windows
   float paperWhiteNits = 203;
-  ToneMapper toneMapper = ToneMapper::Auto;
+  ToneMapper toneMapper = ToneMapper::Vanilla;  // the look of HDR output (SDR keeps the loaded shaders' own)
   float shoulderStart = 0.5f;  // fraction of the peak where highlights start to roll off
   float highlightRange = 1;  // how much of the display's range Vanilla Plus Tonemapper's curve may use (0 = as in SDR)
   float gamma = 2.2f;  // how the game's SDR output is decoded to light

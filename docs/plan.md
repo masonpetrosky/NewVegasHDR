@@ -2,10 +2,10 @@
 
 ## Goal
 
-Real HDR output for Fallout: New Vegas. Everything the game drew below white looks exactly as it did in SDR (the
-game's own look, or Vanilla Plus Tonemapper's when that is installed). What the game's 8-bit pipeline clipped at white
-(sun, sky, fire, lamps, explosions, specular highlights) comes out brighter than white, up to the display's peak. The
-HUD and menus sit at a set paper white.
+Real HDR output for Fallout: New Vegas, with the game's own look: everything the game drew below white looks exactly
+as it did in SDR. What the game's 8-bit pipeline clipped at white (sun, sky, fire, lamps, explosions, specular
+highlights) comes out brighter than white, up to the display's peak. The HUD and menus sit at a set paper white.
+Vanilla Plus Tonemapper's curve is a setting.
 
 It is a standalone xNVSE plugin. It changes no game files and no other mod's files, and uses only DXVK's public D3D9
 extension interfaces.
@@ -109,6 +109,13 @@ white at 2.5), and `pow 1/2.2` back. The plugin recognises VPT's shaders by its 
    that capture, the sky averages 158 nits and the frame 81 instead of 57. `HighlightRange=0` is the SDR curve. The
    game's own look has no curve, so it already uses the full range: 183 nits for that sky.
 
+   The second capture (frame 15362, daylight, the stretched curve in game) matched its replay exactly: sky 160 nits,
+   frame 79. The SDR curve gives 109 and 55 there, the game's own look 186 and 91. Compared live, the stretched curve
+   was clearly brighter, and the user chose the game's own look. In HDR nothing is cut off at white, so a curve that
+   keeps highlights under white has no job left: the game's own image is the faithful one, and VPT's is a style. So
+   `ToneMapper` defaults to `Vanilla`, and it applies to HDR output only. SDR output (Windows HDR off) and `SdrExact`
+   keep the curve of the shaders the game loaded, so that they still look as the game does without the plugin.
+
    The output stays in the game's gamma space, so every later pass (image space effects, HUD) works on what it
    always did. It only goes above 1 where the old target clipped, or where the stretched curve reaches.
 
@@ -154,8 +161,8 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
 | `[HDR] Enabled` | 1 | HDR output when possible |
 | `PeakNits` | 0 | display peak; 0 = what Windows reports (1000 if it reports nothing usable) |
 | `PaperWhiteNits` | 203 | brightness of SDR white, HUD and menus |
-| `ToneMapper` | Auto | `Auto` follows the shaders the game loaded, or `Vanilla` / `VanillaPlus` |
-| `HighlightRange` | 1 | how much of the display's range VPT's curve may use: 0 = as in SDR, 1 = up to the peak |
+| `ToneMapper` | Vanilla | the look of HDR output: `Vanilla` (the game's own), `VanillaPlus`, or `Auto` (the loaded shaders'); SDR output keeps the loaded shaders' look |
+| `HighlightRange` | 1 | how much of the display's range VPT's curve may use in HDR: 0 = as in SDR, 1 = up to the peak |
 | `ShoulderStart` | 0.5 | start of the highlight roll-off, as a fraction of the peak |
 | `Gamma` | 2.2 | decode gamma of the game's image |
 | `[Advanced] ReplaceShaders` | 1 | swap in our HDR blend shaders |
@@ -174,6 +181,8 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
     clipped, and stay at or below the peak.
   - With `HighlightRange=1` VPT's look gets brighter highlights, no pixel gets darker by its brightest channel, the
     shadows stay within 3 %, and the peak still holds. The game's own look does not change.
+  - With `SdrExact=1` and `ToneMapper=Vanilla`, VPT's shaders still give VPT's image. In HDR without a `ToneMapper`
+    key (the default) they give the game's own look.
   - The output alpha is 1 on the back buffer, clipped on an upgraded 8-bit target (NaN gives 0), and unchanged on a
     float target of the game's own.
   - The plugin puts the game's c24/c25 back after each draw.
@@ -200,8 +209,8 @@ modification time changes. `Enabled`, `ReplaceShaders` and `UpgradeRenderTargets
 - How bright the game's highlights really are in interiors and at night (daylight is above, under step 4): capture
   traces and tune `PaperWhiteNits`, `HighlightRange`, `ShoulderStart` and the peak. On OLEDs, large bright areas
   such as the desert sky trigger the panel's brightness limiter, so the defaults should keep big areas modest. The
-  first capture's daylight frame averaged 57 nits (81 with `HighlightRange=1`), well under this panel's 277 nits
-  full-frame limit.
+  daylight captures averaged 55 to 57 nits with VPT's SDR curve, 79 to 81 with it stretched and 91 with the game's
+  own look, well under this panel's 277 nits full-frame limit.
 - What reads the upgraded targets or the back buffer back to the CPU (save game thumbnails, screenshots): the `copy`
   lines and the lines naming a caller in the log show it. Check that saves still get thumbnails.
 - The back buffer now has an alpha channel that holds what the game's draws wrote, where `X8R8G8B8` read as 1. A draw

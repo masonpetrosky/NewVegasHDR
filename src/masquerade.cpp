@@ -231,6 +231,7 @@ void tagTexture(IDirect3DTexture9* texture, D3DFORMAT shown) {
 }
 
 void tagBackBuffers(IDirect3DDevice9* device, D3DFORMAT shown) {
+  InternalScope internal;
   UINT count = 1;
   IDirect3DSwapChain9* swapChain = nullptr;
   if (SUCCEEDED(device->GetSwapChain(0, &swapChain))) {
