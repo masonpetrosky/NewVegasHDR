@@ -111,7 +111,7 @@ white at 2.5), and `pow 1/2.2` back. The plugin recognises VPT's shaders by its 
 
    The second capture (frame 15362, daylight, the stretched curve in game) matched its replay exactly: sky 160 nits,
    frame 79. The SDR curve gives 109 and 55 there, the game's own look 186 and 91. Compared live, the stretched curve
-   was clearly brighter, and the user chose the game's own look. In HDR nothing is cut off at white, so a curve that
+   was clearly brighter, and we chose the game's own look. In HDR nothing is cut off at white, so a curve that
    keeps highlights under white has no job left: the game's own image is the faithful one, and VPT's is a style. So
    `ToneMapper` defaults to `Vanilla`, and it applies to HDR output only. SDR output (Windows HDR off) and `SdrExact`
    keep the curve of the shaders the game loaded, so that they still look as the game does without the plugin.

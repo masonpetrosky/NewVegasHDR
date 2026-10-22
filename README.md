@@ -6,9 +6,9 @@ it did in SDR, and what the game's 8-bit pipeline clipped at white (sun, sky, fi
 brighter than white, up to your display's peak. The HUD sits at a paper white you choose.
 [Vanilla Plus Tonemapper](https://www.nexusmods.com/newvegas/mods/91500)'s softer curve is a setting.
 
-This is a personal project, developed on one machine: RTX 5070 Ti, 4K HDR OLED, the Viva New Vegas modlist, xNVSE
-6.4.8, DXVK 3.0.1. **Status: in development. It runs in game with HDR and passes its test harness; in-game testing
-continues.**
+Developed and tested on one machine: an RTX 5070 Ti, a 4K HDR OLED, Windows 11, the Viva New Vegas modlist, xNVSE
+6.4.8 and DXVK 3.0.1. Other setups are untested so far. If something looks wrong or breaks, please
+[open an issue](https://github.com/masonpetrosky/NewVegasHDR/issues) and attach `NewVegasHDR.log` from the game folder.
 
 ## How it works
 
@@ -34,11 +34,13 @@ it, and writes the result to an 8-bit target that clips everything above 1. The 
   rely on the driver accepting the HDR colour space without the Vulkan extension that announces it; NVIDIA's does.
 - Windows HDR on for the display. Without it, or without DXVK, the plugin leaves the image exactly as it was.
 
-## Install (Mod Organizer 2)
+## Install
 
-Make a mod with `NVSE\Plugins\NewVegasHDR.dll` and `NVSE\Plugins\NewVegasHDR.ini`, and enable it.
-`install.ps1 -Mo2 <MO2 folder>` does this from a build (close Mod Organizer and the game first). To undo, untick the
-mod. The plugin writes `NewVegasHDR.log` in the game folder.
+Download `NewVegasHDR-<version>.zip` from [Releases](https://github.com/masonpetrosky/NewVegasHDR/releases) and
+install it with your mod manager, or copy its `NVSE` folder into the game's `Data` folder. To undo, disable or remove
+the mod. The plugin writes `NewVegasHDR.log` in the game folder.
+
+`install.ps1 -Mo2 <MO2 folder>` installs your own build into Mod Organizer 2 (close Mod Organizer and the game first).
 
 ## Settings
 
@@ -62,8 +64,9 @@ Visual Studio 2022 or newer with the C++ x86 tools, CMake and Ninja (both come w
 SDK (for `fxc`).
 
 ```powershell
-.\build.ps1   # build\NewVegasHDR.dll, build\harness.exe, build\dxvk_hdr_probe.exe
-.\test.ps1    # builds, then checks the plugin against the game's own shaders on DXVK without starting the game
+.\build.ps1     # build\NewVegasHDR.dll, build\harness.exe, build\dxvk_hdr_probe.exe
+.\test.ps1      # builds, then checks the plugin against the game's own shaders on DXVK without starting the game
+.\package.ps1   # builds, then makes dist\NewVegasHDR-<version>.zip as released
 ```
 
 `test.ps1` reads DXVK and the vanilla shaders from the game folder. It needs Vanilla Plus Tonemapper's
